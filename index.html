@@ -53,7 +53,7 @@
   .idle .big { font-size: 16vh; font-weight: 300; letter-spacing: -.02em; }
   .idle .title { font-size: 3.6vh; color: var(--accent); margin-top: 1vh; display: flex; align-items: center; gap: 1.4vh; }
   .idle .title svg { width: 4vh; height: 4vh; fill: var(--accent); }
-  .idle .hint { font-size: 2.4vh; opacity: .6; margin-top: 2vh; }
+  .idle .hint { font-size: 2.4vh; opacity: .6; margin-top: 2vh; text-align: center; line-height: 1.6; }
 
   .error { position: absolute; left: 50%; bottom: 10vh; transform: translateX(-50%); max-width: 70vw; text-align: center;
     background: rgba(120,20,20,.85); border-radius: 16px; padding: 2vh 3vh; font-size: 2.4vh; display: none; }
@@ -80,6 +80,8 @@
     </div>
     <div class="hint" id="idleHint">Choisis des photos sur ton téléphone</div>
   </div>
+
+  <div class="badge" id="demoHint" style="top:auto;bottom:10vh">Appui : pause · Glisser : photo suivante / précédente</div>
 
   <div class="error" id="error">Impossible de charger les photos. Vérifie que le téléphone et la télé sont sur le même Wi-Fi, et que l'appli est toujours ouverte.</div>
 
@@ -113,7 +115,8 @@
   setInterval(tickClock, 10000);
 
   // ---------- Chargement des photos ----------
-  function urlAt(i) { return base + items[i][0] + '.jpg'; }
+  // items[i] = [id, date] (photos du téléphone) ou [id, date, url] (mode démo).
+  function urlAt(i) { return items[i][2] || (base + items[i][0] + '.jpg'); }
 
   function preload(i) {
     var u = urlAt(i);
@@ -334,7 +337,52 @@
     }
   }
 
-  if (window.cast && cast.framework) {
+  // ---------- Mode démo (?demo) : aperçu du diaporama dans un navigateur ----------
+  function runDemo() {
+    var photos = [
+      [1015, '3 juillet 2024', 1920, 1280], [1043, '18 août 2024', 1920, 1280],
+      [1027, '24 août 2024', 1080, 1620], [1039, '2 septembre 2024', 1920, 1280],
+      [1018, '21 décembre 2024', 1920, 1280], [1011, '14 février 2025', 1080, 1620],
+      [1036, '9 mars 2025', 1920, 1280], [1050, '30 mai 2025', 1920, 1280]
+    ];
+    var demoItems = photos.map(function (p) {
+      return [p[0], p[1], 'https://picsum.photos/id/' + p[0] + '/' + p[2] + '/' + p[3] + '.jpg'];
+    });
+    $('idleHint').textContent = 'Mode démo — chargement des photos…';
+    onMessage({ type: 'PLAYLIST', title: 'Démo', items: demoItems, settings: { interval: 6, kenBurns: true, showInfo: true } });
+
+    // Commandes : appui = pause, glissement = photo suivante / précédente, flèches et espace au clavier.
+    var hint = $('demoHint');
+    hint.classList.add('visible');
+    setTimeout(function () { hint.classList.remove('visible'); }, 5000);
+    var startX = null;
+    document.addEventListener('touchstart', function (e) { startX = e.touches[0].clientX; }, { passive: true });
+    document.addEventListener('touchend', function (e) {
+      if (startX === null) return;
+      var dx = e.changedTouches[0].clientX - startX;
+      startX = null;
+      if (Math.abs(dx) > 50) onMessage({ type: dx < 0 ? 'NEXT' : 'PREV' });
+      else onMessage({ type: paused ? 'RESUME' : 'PAUSE' });
+    });
+    document.addEventListener('click', function (e) {
+      if (e.pointerType === 'touch' || e.detail === 0) return;
+      onMessage({ type: paused ? 'RESUME' : 'PAUSE' });
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight') onMessage({ type: 'NEXT' });
+      else if (e.key === 'ArrowLeft') onMessage({ type: 'PREV' });
+      else if (e.key === ' ') onMessage({ type: paused ? 'RESUME' : 'PAUSE' });
+    });
+  }
+
+  var isDemo = /[?&]demo\b/.test(location.search);
+  var onCastDevice = /CrKey/.test(navigator.userAgent);
+
+  if (isDemo) {
+    document.body.style.cursor = 'default';
+    runDemo();
+  } else if (window.cast && cast.framework) {
+    if (!onCastDevice) showPreviewHint();
     context = cast.framework.CastReceiverContext.getInstance();
     context.addCustomMessageListener(NS, function (event) { onMessage(event.data); });
     context.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, function () {
@@ -352,10 +400,15 @@
     options.skipPlayersLoad = true;
     options.customNamespaces = {};
     options.customNamespaces[NS] = cast.framework.system.MessageType.JSON;
-    context.start(options);
+    try { context.start(options); } catch (e) { showPreviewHint(); }
   } else {
-    // Ouvert dans un navigateur classique : simple aperçu de l'écran d'attente.
-    $('idleHint').textContent = 'Aperçu — cette page s’affiche sur la télé via Google Cast';
+    showPreviewHint();
+  }
+
+  // Ouvert dans un navigateur classique : simple aperçu de l'écran d'attente.
+  function showPreviewHint() {
+    $('idleHint').innerHTML = 'Aperçu — cette page s’affiche sur la télé via Google Cast<br>' +
+      '<a href="?demo" style="color:#ffb86b">Voir la démo du diaporama</a>';
   }
 })();
 </script>

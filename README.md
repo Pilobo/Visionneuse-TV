@@ -15,7 +15,15 @@ https://pilobo.github.io/Visionneuse-TV/
 
 (GitHub Pages : *Settings* → *Pages* → *Deploy from a branch* → `main` / `(root)`.)
 
-## Aperçu
+## Tester sur le téléphone (mode démo)
 
-Ouverte dans un navigateur classique, la page affiche seulement l'écran d'attente : le diaporama ne
-démarre que sur une télé, depuis l'appli.
+Ouvre <https://pilobo.github.io/Visionneuse-TV/?demo> dans le navigateur du téléphone, tenu à
+l'horizontale : un diaporama de quelques photos d'exemple démarre, avec le même rendu que sur la
+télé.
+
+- Appui sur l'écran : pause / reprise
+- Glisser vers la gauche ou la droite : photo suivante / précédente
+- Sur ordinateur : flèches ← → et barre d'espace
+
+Sans `?demo`, la page affiche seulement l'écran d'attente : le vrai diaporama démarre sur la télé,
+depuis l'appli.

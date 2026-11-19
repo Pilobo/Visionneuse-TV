@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Visionneuse</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+<style>
+  :root { --fade: 1600ms; --accent: #ffb86b; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; width: 100%; height: 100%; overflow: hidden;
+    background: #000; color: #fff;
+    font-family: "Google Sans", Roboto, "Helvetica Neue", Arial, sans-serif;
+    cursor: none;
+  }
+
+  /* Deux calques superposés : l'un apparaît pendant que l'autre disparaît (fondu enchaîné). */
+  .slide { position: absolute; inset: 0; opacity: 0; transition: opacity var(--fade) ease-in-out; overflow: hidden; }
+  .slide.visible { opacity: 1; }
+  .slide img { position: absolute; display: block; }
+  /* Fond : la même photo, agrandie et floutée, pour remplir l'écran sans bandes noires. */
+  .slide .bg { inset: -8%; width: 116%; height: 116%; object-fit: cover; filter: blur(48px) brightness(.42) saturate(1.25); }
+  .slide .fg { inset: 0; width: 100%; height: 100%; object-fit: contain; will-change: transform; }
+
+  .shade { position: absolute; left: 0; right: 0; bottom: 0; height: 32%;
+    background: linear-gradient(to top, rgba(0,0,0,.6), rgba(0,0,0,0)); pointer-events: none;
+    opacity: 0; transition: opacity 800ms; }
+  .info { position: absolute; left: 5vw; bottom: 6vh; opacity: 0; transform: translateY(12px);
+    transition: opacity 900ms ease, transform 900ms ease; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+  .info.visible, .shade.visible { opacity: 1; transform: none; }
+  .info .date { font-size: 3.4vh; font-weight: 500; letter-spacing: .01em; }
+  .info .album { font-size: 2.3vh; opacity: .75; margin-top: .5vh; }
+
+  .clock { position: absolute; right: 5vw; top: 5vh; font-size: 2.6vh; font-weight: 500; opacity: .8;
+    text-shadow: 0 2px 10px rgba(0,0,0,.6); transition: opacity 600ms; }
+
+  .badge { position: absolute; left: 50%; top: 6vh; transform: translateX(-50%);
+    background: rgba(0,0,0,.55); border-radius: 999px; padding: 1.2vh 2.4vh; font-size: 2.2vh;
+    opacity: 0; transition: opacity 400ms; display: flex; align-items: center; gap: 1.2vh; }
+  .badge.visible { opacity: 1; }
+  .badge svg { width: 2.6vh; height: 2.6vh; fill: var(--accent); }
+
+  .progress { position: absolute; left: 0; bottom: 0; height: 3px; width: 100%; background: rgba(255,255,255,.08);
+    opacity: 0; transition: opacity 600ms; }
+  .progress.visible { opacity: 1; }
+  .progress div { height: 100%; width: 0; background: var(--accent); opacity: .7; }
+
+  /* Écran d'attente, avant le premier envoi depuis le téléphone. */
+  .idle { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at 30% 20%, #2a1d0f 0%, #0f0e0d 60%); transition: opacity 1s; }
+  .idle.hidden { opacity: 0; pointer-events: none; }
+  .idle .big { font-size: 16vh; font-weight: 300; letter-spacing: -.02em; }
+  .idle .title { font-size: 3.6vh; color: var(--accent); margin-top: 1vh; display: flex; align-items: center; gap: 1.4vh; }
+  .idle .title svg { width: 4vh; height: 4vh; fill: var(--accent); }
+  .idle .hint { font-size: 2.4vh; opacity: .6; margin-top: 2vh; }
+
+  .error { position: absolute; left: 50%; bottom: 10vh; transform: translateX(-50%); max-width: 70vw; text-align: center;
+    background: rgba(120,20,20,.85); border-radius: 16px; padding: 2vh 3vh; font-size: 2.4vh; display: none; }
+  .error.visible { display: block; }
+</style>
+</head>
+<body>
+  <div class="slide" id="layerA"><img class="bg" alt=""><img class="fg" alt=""></div>
+  <div class="slide" id="layerB"><img class="bg" alt=""><img class="fg" alt=""></div>
+
+  <div class="shade" id="shade"></div>
+  <div class="info" id="info"><div class="date" id="infoDate"></div><div class="album" id="infoAlbum"></div></div>
+  <div class="clock" id="clock"></div>
+  <div class="badge" id="badge">
+    <svg viewBox="0 0 24 24"><path d="M6,19h4V5H6v14zM14,5v14h4V5h-4z"/></svg><span>En pause</span>
+  </div>
+  <div class="progress" id="progress"><div id="progressBar"></div></div>
+
+  <div class="idle" id="idle">
+    <div class="big" id="idleClock"></div>
+    <div class="title">
+      <svg viewBox="0 0 24 24"><path d="M10,8v8l5,-4 -5,-4zM19,3H5c-1.1,0 -2,0.9 -2,2v14c0,1.1 0.9,2 2,2h14c1.1,0 2,-0.9 2,-2V5c0,-1.1 -0.9,-2 -2,-2zM19,19H5V5h14v14z"/></svg>
+      Visionneuse
+    </div>
+    <div class="hint" id="idleHint">Choisis des photos sur ton téléphone</div>
+  </div>
+
+  <div class="error" id="error">Impossible de charger les photos. Vérifie que le téléphone et la télé sont sur le même Wi-Fi, et que l'appli est toujours ouverte.</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var NS = 'urn:x-cast:com.pilobo.visionneuse';
+  var $ = function (id) { return document.getElementById(id); };
+
+  var items = [];          // [[id, date], ...]
+  var base = '';
+  var album = '';
+  var idx = 0;
+  var paused = false;
+  var timer = null;
+  var generation = 0;      // change à chaque nouvelle liste : annule les chargements en cours
+  var settings = { interval: 8, kenBurns: true, showInfo: true };
+  var layers = [$('layerA'), $('layerB')];
+  var front = 0;
+  var cache = new Map();   // url -> { img, promise }
+  var showing = false;
+
+  // ---------- Horloge ----------
+  function tickClock() {
+    var t = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    $('clock').textContent = t;
+    $('idleClock').textContent = t;
+  }
+  tickClock();
+  setInterval(tickClock, 10000);
+
+  // ---------- Chargement des photos ----------
+  function urlAt(i) { return base + items[i][0] + '.jpg'; }
+
+  function preload(i) {
+    var u = urlAt(i);
+    var entry = cache.get(u);
+    if (!entry) {
+      var img = new Image();
+      img.decoding = 'async';
+      var p = new Promise(function (resolve, reject) {
+        img.onload = function () {
+          // decode() évite une saccade au moment du fondu.
+          (img.decode ? img.decode().catch(function () {}) : Promise.resolve()).then(function () { resolve(u); });
+        };
+        img.onerror = function () { reject(new Error('load ' + u)); };
+      });
+      img.src = u;
+      entry = { img: img, promise: p };
+      cache.set(u, entry);
+      p.catch(function () { cache.delete(u); });
+    }
+    return entry.promise;
+  }
+
+  function trimCache() {
+    var keep = new Set();
+    for (var d = -1; d <= 2; d++) {
+      if (items.length) keep.add(urlAt((idx + d + items.length) % items.length));
+    }
+    cache.forEach(function (_, u) { if (!keep.has(u)) cache.delete(u); });
+  }
+
+  // ---------- Affichage ----------
+  function startKenBurns(img) {
+    if (img.getAnimations) img.getAnimations().forEach(function (a) { a.cancel(); });
+    if (!settings.kenBurns || !img.animate) return;
+    var scale = 1.06 + Math.random() * 0.06;
+    var dx = (Math.random() * 2 - 1) * 2.2;
+    var dy = (Math.random() * 2 - 1) * 1.6;
+    var duration = settings.interval * 1000 + 2500;
+    img.animate(
+      [{ transform: 'scale(1) translate(0, 0)' }, { transform: 'scale(' + scale + ') translate(' + dx + '%, ' + dy + '%)' }],
+      { duration: duration, easing: 'ease-out', fill: 'forwards' }
+    );
+  }
+
+  function setAnimationsPaused(p) {
+    var fg = layers[front].querySelector('.fg');
+    if (!fg.getAnimations) return;
+    fg.getAnimations().forEach(function (a) { if (p) a.pause(); else a.play(); });
+  }
+
+  function startProgress() {
+    var bar = $('progressBar');
+    if (bar.getAnimations) bar.getAnimations().forEach(function (a) { a.cancel(); });
+    $('progress').classList.toggle('visible', !paused && items.length > 1);
+    if (paused || items.length < 2 || !bar.animate) return;
+    bar.animate([{ width: '0%' }, { width: '100%' }], { duration: settings.interval * 1000, easing: 'linear', fill: 'forwards' });
+  }
+
+  function updateInfo() {
+    var date = items[idx] ? items[idx][1] : '';
+    $('infoDate').textContent = date || album;
+    $('infoAlbum').textContent = date ? album : '';
+    var visible = settings.showInfo && !!(date || album);
+    var info = $('info');
+    info.classList.remove('visible');
+    // Petit décalage pour relancer l'animation d'apparition.
+    setTimeout(function () {
+      info.classList.toggle('visible', visible);
+      $('shade').classList.toggle('visible', visible);
+    }, 500);
+    $('clock').style.opacity = settings.showInfo ? '.8' : '0';
+  }
+
+  function show(i) {
+    if (!items.length) return;
+    var gen = generation;
+    clearTimeout(timer);
+    showing = true;
+    var limit = Math.min(items.length, 5);
+    var tries = 0;
+
+    function attempt(k) {
+      preload(k).then(function () {
+        if (gen !== generation) return;
+        display(k);
+      }, function () {
+        if (gen !== generation) return;
+        tries++;
+        if (tries >= limit) {
+          showing = false;
+          $('error').classList.add('visible');
+          timer = setTimeout(function () { show((k + 1) % items.length); }, 5000);
+        } else {
+          attempt((k + 1) % items.length);
+        }
+      });
+    }
+    attempt(i);
+  }
+
+  function display(i) {
+    idx = i;
+    showing = false;
+    $('error').classList.remove('visible');
+    $('idle').classList.add('hidden');
+
+    var next = layers[1 - front];
+    var u = urlAt(i);
+    var fg = next.querySelector('.fg');
+    var bg = next.querySelector('.bg');
+    fg.src = u;
+    bg.src = u;
+    startKenBurns(fg);
+    if (paused) setTimeout(function () { setAnimationsPaused(true); }, 0);
+
+    next.classList.add('visible');
+    layers[front].classList.remove('visible');
+    front = 1 - front;
+
+    updateInfo();
+    startProgress();
+    sendStatus();
+    if (items.length > 1) preload((i + 1) % items.length).catch(function () {});
+    trimCache();
+    schedule();
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    if (paused || items.length < 2) return;
+    timer = setTimeout(function () { show((idx + 1) % items.length); }, settings.interval * 1000);
+  }
+
+  function setPaused(p) {
+    paused = p;
+    setAnimationsPaused(p);
+    $('badge').classList.toggle('visible', p);
+    if (p) clearTimeout(timer); else schedule();
+    startProgress();
+    sendStatus();
+  }
+
+  function applySettings(s) {
+    if (!s) return;
+    if (typeof s.interval === 'number' && s.interval >= 1) settings.interval = s.interval;
+    if (typeof s.kenBurns === 'boolean') settings.kenBurns = s.kenBurns;
+    if (typeof s.showInfo === 'boolean') settings.showInfo = s.showInfo;
+  }
+
+  function goIdle() {
+    generation++;
+    clearTimeout(timer);
+    items = [];
+    paused = false;
+    cache.clear();
+    layers.forEach(function (l) { l.classList.remove('visible'); });
+    $('info').classList.remove('visible');
+    $('shade').classList.remove('visible');
+    $('badge').classList.remove('visible');
+    $('progress').classList.remove('visible');
+    $('error').classList.remove('visible');
+    $('idle').classList.remove('hidden');
+  }
+
+  // ---------- Messages avec le téléphone ----------
+  var context = null;
+
+  function sendStatus() {
+    if (!context) return;
+    try {
+      context.sendCustomMessage(NS, undefined, { type: 'STATUS', index: idx, paused: paused, total: items.length });
+    } catch (e) { /* aucun téléphone connecté */ }
+  }
+
+  function onMessage(m) {
+    if (typeof m === 'string') { try { m = JSON.parse(m); } catch (e) { return; } }
+    if (!m || !m.type) return;
+    switch (m.type) {
+      case 'PLAYLIST':
+        generation++;
+        clearTimeout(timer);
+        cache.clear();
+        items = m.items || [];
+        base = m.base || '';
+        album = m.title || '';
+        applySettings(m.settings);
+        paused = false;
+        $('badge').classList.remove('visible');
+        if (items.length) show(0);
+        break;
+      case 'PLAYLIST_MORE':
+        items = items.concat(m.items || []);
+        if (!showing) schedule();
+        break;
+      case 'NEXT':
+        if (items.length) show((idx + 1) % items.length);
+        break;
+      case 'PREV':
+        if (items.length) show((idx - 1 + items.length) % items.length);
+        break;
+      case 'PAUSE':
+        setPaused(true);
+        break;
+      case 'RESUME':
+        setPaused(false);
+        break;
+      case 'SETTINGS':
+        applySettings(m.settings);
+        updateInfo();
+        if (!settings.kenBurns) startKenBurns(layers[front].querySelector('.fg'));
+        schedule();
+        startProgress();
+        break;
+      case 'STOP':
+        goIdle();
+        sendStatus();
+        break;
+    }
+  }
+
+  if (window.cast && cast.framework) {
+    context = cast.framework.CastReceiverContext.getInstance();
+    context.addCustomMessageListener(NS, function (event) { onMessage(event.data); });
+    context.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, function () {
+      if (!items.length) {
+        try { context.sendCustomMessage(NS, undefined, { type: 'NEED_PLAYLIST' }); } catch (e) {}
+      }
+    });
+    context.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, function () {
+      // Le téléphone est parti (appli fermée) : on ferme l'affichage.
+      if (context.getSenders().length === 0) context.stop();
+    });
+
+    var options = new cast.framework.CastReceiverOptions();
+    options.disableIdleTimeout = true;
+    options.skipPlayersLoad = true;
+    options.customNamespaces = {};
+    options.customNamespaces[NS] = cast.framework.system.MessageType.JSON;
+    context.start(options);
+  } else {
+    // Ouvert dans un navigateur classique : simple aperçu de l'écran d'attente.
+    $('idleHint').textContent = 'Aperçu — cette page s’affiche sur la télé via Google Cast';
+  }
+})();
+</script>
+</body>
+</html>
